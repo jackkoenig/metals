@@ -786,6 +786,7 @@ class MetalsLspService(
       id => compilations.compileTarget(id),
       () => bspSession.map(_.mainConnectionIsBloop).getOrElse(false),
       clientConfig.initialConfig.statistics,
+      scalaVersionSelector,
     )
 
   private val popupChoiceReset: PopupChoiceReset = new PopupChoiceReset(

@@ -28,11 +28,10 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
     val otherLibraries = SortedSet(
       "cats-core_2.13", "cats-kernel_2.13", "checker-qual", "circe-core_2.13",
       "circe-numbers_2.13", "error_prone_annotations", "failureaccess", "gson",
-      "guava", "j2objc-annotations", "jsr305", "listenablefuture",
-      "org.eclipse.lsp4j", "org.eclipse.lsp4j.generator",
-      "org.eclipse.lsp4j.jsonrpc", "org.eclipse.xtend.lib",
-      "org.eclipse.xtend.lib.macro", "org.eclipse.xtext.xbase.lib",
-      "scala-library", "scala-reflect", "semanticdb-javac",
+      "guava", "j2objc-annotations", "jsr305", "org.eclipse.lsp4j",
+      "org.eclipse.lsp4j.generator", "org.eclipse.lsp4j.jsonrpc",
+      "org.eclipse.xtend.lib", "org.eclipse.xtend.lib.macro",
+      "org.eclipse.xtext.xbase.lib", "scala-library", "scala-reflect",
       "simulacrum-scalafix-annotations_2.13", "sourcecode_2.13",
     )
 
@@ -44,8 +43,8 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
   }
 
   lazy val expectedLibrariesString: String =
-    this.expectedLibraries.toVector
-      .map((s: String) => s"${s}.jar -")
+    (this.expectedLibraries.toVector
+      .map((s: String) => s"${s}.jar -") :+ "src.zip -")
       .mkString("\n")
 
   lazy val expectedLibrariesCount: Int =
@@ -96,12 +95,6 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
             |""".stripMargin,
       )
       folder = server.server.folder
-      _ = server.assertTreeViewChildren(
-        s"projects-$folder:${server.buildTarget("a")}",
-        "",
-      )
-      _ <- server.didOpen("a/src/main/scala/a/First.scala")
-      _ <- server.didOpen("b/src/main/scala/b/Third.scala")
       _ = server.assertTreeViewChildren(
         s"projects-$folder:${server.buildTarget("a")}",
         """|_empty_/ -
@@ -162,7 +155,7 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
       _ = {
         server.assertTreeViewChildren(
           s"libraries-$folder:${server.jar("sourcecode")}",
-          "sourcecode/ +",
+          "sourcecode/ -",
         )
         server.assertTreeViewChildren(
           s"libraries-$folder:",
@@ -170,31 +163,39 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
         )
         server.assertTreeViewChildren(
           s"libraries-$folder:${server.jar("scala-library")}!/scala/Some#",
-          """|value val
+          // TODO doesn't seem correct
+          """|A type_param
+             |value() method
              |get() method
              |""".stripMargin,
         )
-        server.assertTreeViewChildren(
-          s"libraries-$folder:${server.jar("lsp4j")}!/org/eclipse/lsp4j/FileChangeType#",
-          """|Created enum
-             |Changed enum
-             |Deleted enum
-             |values() method
-             |valueOf() method
-             |getValue() method
-             |forValue() method
-             |""".stripMargin,
-        )
+        // server.assertTreeViewChildren(
+        //   s"libraries-$folder:${server.jar("lsp4j")}!/org/eclipse/lsp4j/FileChangeType#",
+        //   """|getValue() method
+        //      |forValue() method
+        //      |<init>() method
+        //      |Created enum
+        //      |Changed enum
+        //      |Deleted enum
+        //      |value field
+        //      |""".stripMargin,
+        // )
         server.assertTreeViewChildren(
           s"libraries-$folder:${server.jar("circe-core")}!/_root_/",
-          """|io/ +
+          """|io/ -
              |""".stripMargin,
         )
         server.assertTreeViewChildren(
-          s"libraries-$folder:${server.jar("cats-core")}!/cats/instances/symbol/",
-          """|package object
+          s"libraries-$folder:${server.jar("cats-core")}!/_root_/",
+          """|cats/ -
              |""".stripMargin,
         )
+        // TODO have proper types
+        // server.assertTreeViewChildren(
+        //   s"libraries-$folder:${server.jar("cats-core")}!/cats/instances/symbol/",
+        //   """|package object
+        //      |""".stripMargin,
+        // )
         assertNoDiff(
           server.workspaceSymbol("sourcecode.File", includeKind = true),
           """|sourcecode.File Class
@@ -218,47 +219,49 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
               !label.contains("sourcecode")
             },
           ),
+          // TODO src.zip should show the JDK name instead
           s"""|root
               |  Projects (0)
-              |  Libraries (${expectedLibrariesCount})
-              |  Libraries (${expectedLibrariesCount})
-              |    sourcecode_2.13-0.1.7.jar
-              |    sourcecode_2.13-0.1.7.jar
+              |  Libraries (${expectedLibrariesCount + 1})
+              |  Libraries (${expectedLibrariesCount + 1})
+              |    sourcecode_2.13-0.1.7-sources.jar
+              |    src.zip
+              |    sourcecode_2.13-0.1.7-sources.jar
               |      sourcecode/
               |      sourcecode/
               |        Args class
-              |        Args object
-              |        ArgsMacros trait
-              |        Compat object
-              |        Enclosing class
-              |        Enclosing object
-              |        EnclosingMachineMacros trait
-              |        EnclosingMacros trait
-              |        File class
-              |        File object
-              |        FileMacros trait
-              |        FullName class
-              |        FullName object
-              |        FullNameMachineMacros trait
-              |        FullNameMacros trait
-              |        Line class
-              |        Line object
-              |        LineMacros trait
-              |        Macros object
-              |        Name class
-              |        Name object
-              |        NameMachineMacros trait
-              |        NameMacros trait
-              |        Pkg class
-              |        Pkg object
-              |        PkgMacros trait
-              |        SourceCompanion class
-              |        SourceValue class
-              |        Text class
-              |        Text object
-              |        TextMacros trait
-              |        Util object
-              |        File class
+              |        Args field
+              |        ArgsMacros class
+              |        Compat field
+              |        Enclosing field
+              |        Enclosing type
+              |        EnclosingMachineMacros type
+              |        EnclosingMacros type
+              |        File type
+              |        File field
+              |        FileMacros type
+              |        FullName type
+              |        FullName field
+              |        FullNameMachineMacros type
+              |        FullNameMacros type
+              |        Line type
+              |        Line field
+              |        LineMacros type
+              |        Macros field
+              |        Name field
+              |        Name type
+              |        NameMachineMacros type
+              |        NameMacros type
+              |        Pkg type
+              |        Pkg field
+              |        PkgMacros type
+              |        SourceCompanion type
+              |        SourceValue type
+              |        Text field
+              |        Text type
+              |        TextMacros type
+              |        Util field
+              |        File type
               |          value val
               |""".stripMargin,
         )

@@ -133,6 +133,7 @@ class MetalsTreeViewProvider(
       Mtags
         .allToplevels(
           input,
+          // TODO should use right on
           // TreeViewProvider doesn't work with Scala 3 - see #2859
           dialects.Scala213,
         )
@@ -241,9 +242,11 @@ class FolderTreeViewProvider(
     doCompile: BuildTargetIdentifier => Unit,
     isBloop: () => Boolean,
     statistics: StatisticsConfig,
+    scalaVersionSelector: ScalaVersionSelector,
 ) {
-  private val classpath = new ClasspathSymbols(
-    isStatisticsEnabled = statistics.isTreeView
+  private val classpath = new IndexedSymbols(
+    definitionIndex
+    // isStatisticsEnabled = statistics.isTreeView,
   )
   private val isVisible = TrieMap.empty[String, Boolean].withDefaultValue(false)
   private val isCollapsed = TrieMap.empty[BuildTargetIdentifier, Boolean]
@@ -260,8 +263,11 @@ class FolderTreeViewProvider(
     _.toAbsolutePath,
     _.filename,
     _.toString,
-    () => buildTargets.allWorkspaceJars,
-    (path, symbol) => classpath.symbols(path, symbol),
+    () => buildTargets.allSourceJars,
+    (path, symbol) => {
+      val dialect = ScalaVersions.dialectForDependencyJar(path.filename)
+      classpath.jarSymbols(path, symbol, dialect)
+    },
   )
 
   val projects = new ClasspathTreeView[BuildTarget, BuildTargetIdentifier](
@@ -281,11 +287,12 @@ class FolderTreeViewProvider(
       )
     },
     { (id, symbol) =>
-      if (isBloop()) doCompile(id)
-      buildTargets
-        .targetClassDirectories(id)
-        .flatMap(cd => classpath.symbols(cd.toAbsolutePath, symbol))
-        .iterator
+      val tops = for {
+        scalaTarget <- buildTargets.scalaTarget(id).iterator
+        source <- buildTargets.buildTargetSources(id)
+        dialect = scalaTarget.dialect(source)
+      } yield classpath.workspaceSymbols(source, symbol, dialect)
+      tops.flatten
     },
   )
 
@@ -381,18 +388,22 @@ class FolderTreeViewProvider(
   def revealResult(
       path: AbsolutePath,
       closestSymbol: SymbolOccurrence,
-  ): Option[List[String]] =
+  ): Option[List[String]] = {
     if (path.isDependencySource(folder.path) || path.isJarFileSystem) {
       buildTargets
         .inferBuildTarget(List(Symbol(closestSymbol.symbol).toplevel))
         .map { inferred =>
-          libraries.toUri(inferred.jar, inferred.symbol).parentChain
+          val sourceJar = inferred.jar.parent.resolve(
+            inferred.jar.filename.replace(".jar", "-sources.jar")
+          )
+          libraries.toUri(sourceJar, inferred.symbol).parentChain
         }
     } else {
       buildTargets
         .inverseSources(path)
         .map(id => projects.toUri(id, closestSymbol.symbol).parentChain)
     }
+  }
 
   private def ongoingCompilations: Array[TreeViewNode] = {
     compilations().buildTargets.flatMap(ongoingCompileNode).toArray

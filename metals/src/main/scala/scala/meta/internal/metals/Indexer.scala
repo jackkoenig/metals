@@ -562,6 +562,7 @@ final case class Indexer(
                 source,
                 info.symbol,
                 dialect,
+                info,
               )
             }
         }

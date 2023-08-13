@@ -11,6 +11,7 @@ import scala.meta.dialects
 import scala.meta.internal.io.{ListFiles => _}
 import scala.meta.internal.metals.ReportContext
 import scala.meta.io.AbsolutePath
+import scala.meta.internal.semanticdb.SymbolInformation
 
 /**
  * An implementation of GlobalSymbolIndex with fast indexing and low memory usage.
@@ -61,6 +62,22 @@ final class OnDemandSymbolIndex(
         onError(new IndexingExceptions.InvalidSymbolException(symbol.value, e))
         List.empty
     }
+
+  override def toplevelsAt(
+      path: AbsolutePath,
+      dialect: Dialect
+  ): List[SymbolDefinition] = {
+    val bucket = getOrCreateBucket(dialect)
+    bucket.toplevelsAt(path)
+  }
+
+  override def symbolsAt(
+      path: AbsolutePath,
+      dialect: Dialect
+  ): List[SymbolDefinition] = {
+    val bucket = getOrCreateBucket(dialect)
+    bucket.symbolsAt(path)
+  }
 
   override def addSourceDirectory(
       dir: AbsolutePath,
@@ -122,9 +139,10 @@ final class OnDemandSymbolIndex(
       path: String,
       source: AbsolutePath,
       toplevel: String,
-      dialect: Dialect
+      dialect: Dialect,
+      info: SymbolInformation
   ): Unit =
-    getOrCreateBucket(dialect).addToplevelSymbol(path, source, toplevel)
+    getOrCreateBucket(dialect).addToplevelSymbol(path, source, toplevel, info)
 
   private def tryRun[A](path: AbsolutePath, fallback: => A, thunk: => A): A =
     try thunk

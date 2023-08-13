@@ -87,6 +87,7 @@ class ClasspathTreeView[Value, Key](
         // Get the children of this child to determine its collapse state.
         val grandChildren =
           transitiveChildren.filter(_.symbol.owner == child.symbol)
+
         val collapseState =
           if (!childHasSiblings && grandChildren.nonEmpty)
             MetalsTreeItemCollapseState.expanded
@@ -113,6 +114,8 @@ class ClasspathTreeView[Value, Key](
           case k.FIELD =>
             if (child.properties.isEnum) "enum"
             else "field"
+          case k.TYPE_PARAMETER => "type_param"
+          case k.TYPE => "type"
           case _ => null
         }
 
