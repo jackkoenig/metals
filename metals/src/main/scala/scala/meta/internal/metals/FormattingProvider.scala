@@ -27,6 +27,7 @@ import scala.meta.internal.metals.Messages.UpdateScalafmtConf
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.clients.language.MetalsLanguageClient
 import scala.meta.internal.semver.SemVer
+import scala.meta.io.AbsolutePath
 
 import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import org.eclipse.lsp4j.jsonrpc.CancelChecker
@@ -40,7 +41,7 @@ import org.scalafmt.interfaces.ScalafmtReporter
  * Implement text formatting using Scalafmt
  */
 final class FormattingProvider(
-    workspace: AbsolutePath,
+    val workspace: AbsolutePath,
     buffers: Buffers,
     userConfig: () => UserConfiguration,
     client: MetalsLanguageClient,
@@ -67,6 +68,7 @@ final class FormattingProvider(
     )
   }
 
+  private val defaultScalafmtLocation = workspace.resolve(".scalafmt.conf")
   private var scalafmt = FormattingProvider.newScalafmt()
   private val reporterPromise =
     new AtomicReference[Option[Promise[Boolean]]](None)
@@ -81,19 +83,21 @@ final class FormattingProvider(
   // Warms up the Scalafmt instance so that the first formatting request responds faster.
   // Does nothing if there is no .scalafmt.conf or there is no configured version setting.
   def load(): Unit = {
-    if (scalafmtConf.isFile && !Testing.isEnabled) {
-      try {
-        scalafmt.format(
-          scalafmtConf.toNIO,
-          Paths.get("Main.scala"),
-          "object Main  {}",
-        )
-      } catch {
-        case e: ScalafmtDynamicError =>
-          scribe.debug(
-            s"Scalafmt issue while warming up due to config issue: ${e.getMessage()}"
+    scalafmtConf match {
+      case Some(conf) if !Testing.isEnabled =>
+        try {
+          scalafmt.format(
+            conf.toNIO,
+            Paths.get("Main.scala"),
+            "object Main  {}",
           )
-      }
+        } catch {
+          case e: ScalafmtDynamicError =>
+            scribe.debug(
+              s"Scalafmt issue while warming up due to config issue: ${e.getMessage()}"
+            )
+        }
+      case _ =>
 
     }
   }
@@ -105,8 +109,8 @@ final class FormattingProvider(
     scalafmt = scalafmt.withReporter(activeReporter)
     reset(token)
     val input = path.toInputFromBuffers(buffers)
-    if (!scalafmtConf.isFile) {
-      handleMissingFile(scalafmtConf).map {
+    if (scalafmtConf.isEmpty) {
+      handleMissingFile().map {
         case true =>
           runFormat(path, input).asJava
         case false =>
@@ -137,7 +141,12 @@ final class FormattingProvider(
     val fullDocumentRange = Position.Range(input, 0, input.chars.length).toLsp
     val formatted =
       try {
-        scalafmt.format(scalafmtConf.toNIO, path.toNIO, input.text)
+        scalafmtConf match {
+          case Some(config) =>
+            scalafmt.format(config.toNIO, path.toNIO, input.text)
+          case None =>
+            input.text
+        }
       } catch {
         case e: ScalafmtDynamicError =>
           scribe.debug(
@@ -203,14 +212,16 @@ final class FormattingProvider(
     } else Future.successful(None)
   }
 
-  private def handleMissingFile(path: AbsolutePath): Future[Boolean] = {
+  private def handleMissingFile(): Future[Boolean] = {
     if (!tables.dismissedNotifications.CreateScalafmtFile.isDismissed) {
       val params = MissingScalafmtConf.params()
       client.showMessageRequest(params).asScala.map { item =>
         if (item == MissingScalafmtConf.createFile) {
-          Files.createDirectories(path.toNIO.getParent)
           Files
-            .write(path.toNIO, initialConfig().getBytes(StandardCharsets.UTF_8))
+            .write(
+              defaultScalafmtLocation.toNIO,
+              initialConfig().getBytes(StandardCharsets.UTF_8),
+            )
           client.showMessage(MissingScalafmtConf.fixedParams(isCancelled))
           true
         } else if (item == Messages.notNow) {
@@ -351,14 +362,15 @@ final class FormattingProvider(
   }
 
   private def checkIfDialectUpgradeRequired(
-      config: ScalafmtConfig
+      config: ScalafmtConfig,
+      configPath: AbsolutePath,
   ): Future[Unit] = {
     if (tables.dismissedNotifications.UpdateScalafmtConf.isDismissed)
       Future.unit
     else {
       Future(inspectDialectRewrite(config)).flatMap {
         case Some(rewrite) =>
-          val canUpdate = rewrite.canUpdate && scalafmtConf.isInside(workspace)
+          val canUpdate = rewrite.canUpdate && configPath.isInside(workspace)
           val params =
             UpdateScalafmtConf.params(rewrite.maxDialect, canUpdate)
 
@@ -369,10 +381,10 @@ final class FormattingProvider(
 
           client.showMessageRequest(params).asScala.map { item =>
             if (item == UpdateScalafmtConf.letUpdate) {
-              val text = scalafmtConf.toInputFromBuffers(buffers).text
+              val text = configPath.toInputFromBuffers(buffers).text
               val updatedText = rewrite.rewrite(text)
               Files.write(
-                scalafmtConf.toNIO,
+                configPath.toNIO,
                 updatedText.getBytes(StandardCharsets.UTF_8),
               )
             } else if (item == Messages.notNow) {
@@ -388,52 +400,63 @@ final class FormattingProvider(
   }
 
   def validateWorkspace(): Future[Unit] = {
-    if (scalafmtConf.exists) {
-      val text = scalafmtConf.toInputFromBuffers(buffers).text
-      ScalafmtConfig.parse(text) match {
-        case Failure(e) =>
-          scribe.error(s"Failed to parse ${scalafmtConf}", e)
-          Future.unit
-        case Success(values) =>
-          checkIfDialectUpgradeRequired(values)
-      }
-    } else {
-      Future.unit
+    scalafmtConf match {
+      case Some(conf) =>
+        val text = conf.toInputFromBuffers(buffers).text
+        ScalafmtConfig.parse(text) match {
+          case Failure(e) =>
+            scribe.error(s"Failed to parse ${conf}", e)
+            Future.unit
+          case Success(values) =>
+            checkIfDialectUpgradeRequired(values, conf)
+        }
+      case None =>
+        Future.unit
     }
   }
 
-  private def scalafmtConf: AbsolutePath = {
+  private def scalafmtConf: Option[AbsolutePath] = {
     val configpath = userConfig().scalafmtConfigPath
-    configpath.getOrElse(workspace.resolve(".scalafmt.conf"))
+    val default: Option[AbsolutePath] = {
+      val defaultLocation = defaultScalafmtLocation
+      lazy val scalacliDefault =
+        workspace.resolve(".scala-build/.scalafmt.conf")
+      if (defaultLocation.exists) Some(defaultLocation)
+      else if (scalacliDefault.exists) Some(scalacliDefault)
+      else None
+    }
+    configpath.orElse(default)
   }
 
   private val activeReporter: ScalafmtReporter = new ScalafmtReporter {
     private var downloadingScalafmt = Promise[Unit]()
     override def error(file: Path, message: String): Unit = {
       scribe.error(s"scalafmt: $file: $message")
-      if (file == scalafmtConf.toNIO) {
-        downloadingScalafmt.trySuccess(())
-        if (message.contains("failed to resolve Scalafmt version")) {
-          client.showMessage(MissingScalafmtVersion.failedToResolve(message))
-        }
-        val input = scalafmtConf.toInputFromBuffers(buffers)
-        val pos = Position.Range(input, 0, input.chars.length)
-        client.publishDiagnostics(
-          new l.PublishDiagnosticsParams(
-            file.toUri.toString,
-            Collections.singletonList(
-              new l.Diagnostic(
-                new l.Range(
-                  new l.Position(0, 0),
-                  new l.Position(pos.endLine, pos.endColumn),
-                ),
-                message,
-                l.DiagnosticSeverity.Error,
-                "scalafmt",
-              )
-            ),
+      scalafmtConf match {
+        case Some(conf) if file == conf.toNIO =>
+          downloadingScalafmt.trySuccess(())
+          if (message.contains("failed to resolve Scalafmt version")) {
+            client.showMessage(MissingScalafmtVersion.failedToResolve(message))
+          }
+          val input = conf.toInputFromBuffers(buffers)
+          val pos = Position.Range(input, 0, input.chars.length)
+          client.publishDiagnostics(
+            new l.PublishDiagnosticsParams(
+              file.toUri.toString,
+              Collections.singletonList(
+                new l.Diagnostic(
+                  new l.Range(
+                    new l.Position(0, 0),
+                    new l.Position(pos.endLine, pos.endColumn),
+                  ),
+                  message,
+                  l.DiagnosticSeverity.Error,
+                  "scalafmt",
+                )
+              ),
+            )
           )
-        )
+        case _ =>
       }
     }
 
